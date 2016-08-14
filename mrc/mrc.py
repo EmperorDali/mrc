@@ -216,24 +216,39 @@ class MRCFile:
                     corrupted?""".format(filename, header_entry[2]))
 
         data_shape = (self.header.NZ, self.header.NY, self.header.NX)
-
+        
         if self.header.MODE == 0:
             self._bytes_per_section = 1*self.header.NX*self.header.NY
-            self.data = np.zeros(data_shape, dtype=int8)
+            dt = np.int8
         elif self.header.MODE == 1:
             self._bytes_per_section = 2*self.header.NX*self.header.NY
-            self.data = np.zeros(data_shape, dtype=int16)
+            dt = np.int16
         elif self.header.MODE == 2:
-            self._bytes_per_secton = 4*self.header.NX*self.header.NY
-            self.data = np.zeros(data_shape, dtype=float32)
+            self._bytes_per_section = 4*self.header.NX*self.header.NY
+            dt = np.float32
         elif self.header.MODE == 3:
             raise NotImplementedError("MRC Mode 3 data not implemented")
         elif self.header.MODE == 4:
             raise NotImplementedError("MRC Mode 4 data not implemented")            
         elif self.header.MODE == 6:
             self._bytes_per_section = 2*self.header.NX*self.header.NY
-            self.data = np.zeros(data_shape, dtype=uint16)
+            dt = np.uint16
+
+        self.mrc_fd.seek(header_byte_size)
             
+        if self.header.NSYMBT > 0:
+            self.extra_header_data = struct.unpack(
+                '{}s'.format(self.header.NSYMBT),
+                self.mrc_fd.read(self.header.NSYMBT))
+            
+        self.mrc_fd.seek(header_byte_size + self.header.NSYMBT)
+            
+        self.data = np.frombuffer(self.mrc_fd.read(-1),
+                                  dtype=dt).reshape(self.header.NZ,
+                                                    self.header.NY,
+                                                    self.header.NX)
+        self.mrc_fd.close()
+        
     def __getitem__(self,index):
         if len(index) == 2:
             index = (0,) + index
@@ -242,60 +257,28 @@ class MRCFile:
             raise ValueError("Expected 2 or 3 indices")
             
         return self.data[index]
+
+    def write_file(self, filename):
+        new_mrc_fd = open(filename, 'wb')
+
+        for header_entry in _mrc_header_specification:
+            new_mrc_fd.seek(header_entry[0])
+            new_mrc_fd.write(struct.pack(header_entry[1],
+                                         getattr(self.header,
+                                                 header_entry[2])))
         
-    # def write_file(self,filename,overwrite=False):
-    #     # Write MRC data to filename
+        last_header_entry = max(_mrc_header_specification, key=lambda x: x[0])
+        header_byte_size = last_header_entry[0] + struct.calcsize(last_header_entry[1])
+        new_mrc_fd.seek(header_byte_size)
 
-    #     if os.path.exists(filename) and not overwrite:
-    #         print("%s exists, call write_file(%s,overwrite=True) to overwrite"%(filename,filename), file=sys.stderr)
-    #         return
+        if self.header.NSYMBT > 0:
+            new_mrc_fd.write(struct.pack('{}s'.format(self.header.NSYMBT),
+            self.extra_header_data))
 
-    #     assert self.header.nsymbt == 0, "Writing MRC files with symmetry operations not supported"
+        new_mrc_fd.seek(header_byte_size + self.header.NSYMBT)
+
+        self.data.flatten().tofile(new_mrc_fd)
+
+        new_mrc_fd.close()
         
-    #     out_fd = open(filename, 'wb')
-
-    #     # Write header
-    #     raw_header_data = self.header._asdict().values()
-
-    #     # Annoying hack: field 24 in header data "extra" needs to be
-    #     # passed unpacked to struct.pack
-    #     header_data = raw_header_data[:24] + [e for e in raw_header_data[24]] + raw_header_data[25:]
-
-    #     header_format_string = "".join([ field[0] for field in self.header_format ])
-        
-    #     out_fd.write(struct.pack(header_format_string,*header_data))
-
-    #     self.slices.flatten().astype(self.slice_type).tofile(out_fd)            
-        
-    #     out_fd.close()
-            
-    # def load_all_slices(self):
-    #     self.mrc_fd.seek(self.header_size + self.header.nsymbt)
-
-    #     self.slices = np.ndarray((self.header.nz, self.header.nx, self.header.ny, self.header.nz))
-
-    #     all_format_string = '%d%s'%(self.vol, self.slice_element_format_string)
-
-    #     all_byte_size = self.slice_element_byte_size*self.vol
-    #     self.slices = np.array(struct.unpack(all_format_string, self.mrc_fd.read(all_byte_size)))
-    #     self.slices = self.slices.reshape((self.header.nz, self.header.nx, self.header.ny))
-        
-    # def get_images(self, image_indices=None):
-    #     if image_indices is None:
-    #         image_indices = range(self.header.nz)
-            
-    #     self.images = np.ndarray((len(image_indices), self.header.nx, self.header.ny))
-
-    #     for image_index, image in enumerate(image_indices):
-    #         self.mrc_fd.seek(self.header_size + self.header.nsymbt + image_index*self.num_cols*self.num_rows, 0)
-
-    #         slice_format_string = '%d%d'%(self.num_slice_elements,self.slice_element_format_string)
-    #         slice_byte_size = self.slice_element_byte_size*self.num_cols*self.num_rows
-    #         images[image_index,:,:] = np.array(struct.unpack('<%df'%(self.num_cols*self.num_rows), self.mrc_fd.read(slice_byte_size))).reshape((self.num_rows,self.num_cols))
-
-    #     return images
-
-    # def close(self):
-    #     self.mrc_fd.close()
-    #     self.mrc_fd = None
 
