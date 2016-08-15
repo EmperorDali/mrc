@@ -167,8 +167,9 @@ class MRCFile:
                                   [224, '800s', "LABEL",
                                    "10 80-character text labels"] ]
 
-    MRCHeader = namedtuple( 'MRCHeader', [ header_entry[2] for header_entry in
+    _MRCHeader = namedtuple( '_MRCHeader', [ header_entry[2] for header_entry in
                                            _mrc_header_specification ] )
+
     def __init__(self, *args):
         if len(args) is not 1:
             raise ValueError('Expected exactly one argument')
@@ -178,16 +179,17 @@ class MRCFile:
         else:
             self._from_array(args[0])
 
-    def _from_file(self, filename,prefetch=False):
+    def _from_file(self, filename,use_memmap=True):
         self.mrc_fd = open(filename, 'rb')
 
-        last_header_entry = max(_mrc_header_specification, key=lambda x: x[0])
-        
-        header_byte_size = last_header_entry[0] + struct.calcsize(last_header_entry[1])
+        last_header_entry = max(MRCFile._mrc_header_specification, key=lambda x: x[0])
+        header_byte_size = (last_header_entry[0] +
+                            struct.calcsize(last_header_entry[1]))
 
         # MRC2014 file header should always be 1024 bytes
-        assert header_byte_size == 1024, """MRC2014 header size must be 1024
-        bytes. Check for an error in _mrc_header_specification"""
+        assert header_byte_size == 1024, ('MRC2014 header size must be 1024'
+                                          'bytes. Check for an error in '
+                                          '_mrc_header_specification')
         
         self.mrc_fd = open(filename, 'rb')
         header_raw = self.mrc_fd.read(header_byte_size)
@@ -197,18 +199,18 @@ class MRCFile:
         header_fields = [ struct.unpack(header_entry[1],
                                         header_raw[header_entry[0]:header_entry[0]+struct.calcsize(header_entry[1])])
                           for header_entry in
-                          _mrc_header_specification ]
+                          MRCFile._mrc_header_specification ]
 
         # flatten length 1 tulpes in header
         header_args = [ header_entry[0] if len(header_entry) == 1 else
         header_entry for header_entry in header_fields ]
 
-        self.header = MRCHeader(*header_args)
+        self.header = MRCFile._MRCHeader(*header_args)
         
         # Check if header contains correct values
-        for header_entry in _mrc_header_specification:
+        for header_entry in MRCFile._mrc_header_specification:
             if len(header_entry) == 5:
-                header_value = getattr(header, header_entry[2])
+                header_value = getattr(self.header, header_entry[2])
                 if not header_entry[4](header_value):
                     log.error(header_entry[3])
                     raise ValueError("""MRC file header in {} contained an
@@ -241,33 +243,36 @@ class MRCFile:
                 '{}s'.format(self.header.NSYMBT),
                 self.mrc_fd.read(self.header.NSYMBT))
             
-        self.mrc_fd.seek(header_byte_size + self.header.NSYMBT)
-            
-        self.data = np.frombuffer(self.mrc_fd.read(-1),
-                                  dtype=dt).reshape(self.header.NZ,
-                                                    self.header.NY,
-                                                    self.header.NX)
-        self.mrc_fd.close()
-        
-    def __getitem__(self,index):
-        if len(index) == 2:
-            index = (0,) + index
 
-        if len(index) is not 3:
-            raise ValueError("Expected 2 or 3 indices")
-            
+
+        if use_memmap:
+            self.data = np.memmap(self.mrc_fd,dtype=dt,mode='r',
+                                  offset=header_byte_size + self.header.NSYMBT,
+                                  shape=(self.header.NZ,
+                                         self.header.NY,
+                                         self.header.NX))
+        else:
+            # Load all data now
+            self.mrc_fd.seek(header_byte_size + self.header.NSYMBT)
+            self.data = np.frombuffer(self.mrc_fd.read(-1),
+                                      dtype=dt).reshape(self.header.NZ,
+                                                        self.header.NY,
+                                                        self.header.NX)
+            self.mrc_fd.close()
+
+    def __getitem__(self,index):
         return self.data[index]
 
     def write_file(self, filename):
         new_mrc_fd = open(filename, 'wb')
 
-        for header_entry in _mrc_header_specification:
+        for header_entry in MRCFile._mrc_header_specification:
             new_mrc_fd.seek(header_entry[0])
             new_mrc_fd.write(struct.pack(header_entry[1],
                                          getattr(self.header,
                                                  header_entry[2])))
         
-        last_header_entry = max(_mrc_header_specification, key=lambda x: x[0])
+        last_header_entry = max(MRCFile._mrc_header_specification, key=lambda x: x[0])
         header_byte_size = last_header_entry[0] + struct.calcsize(last_header_entry[1])
         new_mrc_fd.seek(header_byte_size)
 
